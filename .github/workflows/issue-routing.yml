@@ -1,0 +1,119 @@
+name: Issue Routing to Automation Platform
+on:
+  issues:
+    types: [opened, edited, labeled, unlabeled]
+  issue_comment:
+    types: [created]
+
+jobs:
+  route-issue:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Extract Issue Data
+        id: extract
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const issue = context.payload.issue || context.payload.issue;
+            const action = context.payload.action;
+            
+            // Extract issue type from labels
+            const labels = issue.labels.map(label => label.name);
+            const typeLabel = labels.find(label => label.startsWith('type:'));
+            const statusLabel = labels.find(label => label.startsWith('status:'));
+            const priorityLabel = labels.find(label => label.startsWith('priority:'));
+            
+            // Prepare payload for automation platform
+            const payload = {
+              action: action,
+              issue: {
+                number: issue.number,
+                title: issue.title,
+                body: issue.body,
+                state: issue.state,
+                labels: labels,
+                assignees: issue.assignees.map(a => a.login),
+                author: issue.user.login,
+                created_at: issue.created_at,
+                updated_at: issue.updated_at,
+                html_url: issue.html_url
+              },
+              repository: {
+                name: context.repo.repo,
+                owner: context.repo.owner,
+                full_name: context.payload.repository.full_name
+              },
+              metadata: {
+                type: typeLabel ? typeLabel.replace('type:', '') : 'unknown',
+                status: statusLabel ? statusLabel.replace('status:', '') : 'new',
+                priority: priorityLabel ? priorityLabel.replace('priority:', '') : 'medium'
+              }
+            };
+            
+            return payload;
+
+      - name: Route to Automation Platform
+        if: contains(github.event.issue.labels.*.name, 'type:feature-request') || contains(github.event.issue.labels.*.name, 'type:prd') || contains(github.event.issue.labels.*.name, 'type:change-request') || contains(github.event.issue.labels.*.name, 'type:bug')
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const payload = ${{ steps.extract.outputs.result }};
+            
+            // Send to automation platform webhook
+            // Replace AUTOMATION_WEBHOOK_URL with your actual webhook URL
+            const webhookUrl = '${{ secrets.AUTOMATION_WEBHOOK_URL }}';
+            
+            if (webhookUrl) {
+              try {
+                const response = await fetch(webhookUrl, {
+                  method: 'POST',
+                  headers: {
+                    'Content-Type': 'application/json',
+                    'X-GitHub-Event': 'issues',
+                    'X-GitHub-Delivery': context.runId,
+                    'Authorization': 'Bearer ${{ secrets.AUTOMATION_TOKEN }}'
+                  },
+                  body: JSON.stringify(payload)
+                });
+                
+                if (response.ok) {
+                  console.log('Successfully sent to automation platform');
+                } else {
+                  console.error('Failed to send to automation platform:', response.status);
+                }
+              } catch (error) {
+                console.error('Error sending to automation platform:', error);
+              }
+            } else {
+              console.log('No automation webhook URL configured');
+              console.log('Payload that would be sent:', JSON.stringify(payload, null, 2));
+            }
+
+      - name: Add Processing Comment
+        if: github.event.action == 'opened' && (contains(github.event.issue.labels.*.name, 'type:feature-request') || contains(github.event.issue.labels.*.name, 'type:prd') || contains(github.event.issue.labels.*.name, 'type:change-request'))
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const comment = `🤖 **Agentic SDLC Pipeline Activated**
+            
+            This ${context.payload.issue.labels.find(l => l.name.startsWith('type:')).name.replace('type:', '')} has been submitted to the automated processing pipeline.
+            
+            **Next Steps:**
+            1. ✅ Intake validation
+            2. 📝 User story generation  
+            3. 🧪 Test case creation
+            4. 🔧 Technical refinement
+            5. 📋 Task breakdown
+            6. 🚀 Ready for development
+            
+            You'll receive updates as each agent completes their work. The process typically takes 15-30 minutes depending on complexity.
+            
+            ---
+            *This is an automated message from the Agentic SDLC pipeline*`;
+            
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: comment
+            });
